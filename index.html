@@ -137,8 +137,8 @@
                     class="px-9 py-3.5 rounded-full bg-white text-black text-xs sm:text-sm font-semibold tracking-[0.18em] uppercase hover:bg-zinc-200 transition-all duration-200 shadow-[0_0_30px_rgba(255,255,255,0.25)] active:scale-95 cursor-pointer">
                 Play
             </button>
-            <div id="global-counter-wrap" class="mt-6 text-[11px] text-zinc-500 tracking-wider font-light opacity-0 transition-opacity duration-500">
-                <span id="global-games-count" class="text-zinc-300 mono">0</span> games played worldwide
+            <div id="global-counter-wrap" class="mt-6 text-[11px] text-zinc-500 tracking-wider font-light">
+                <span id="global-games-count" class="text-zinc-300 mono">0</span> <span id="global-games-label">games played worldwide</span>
             </div>
         </div>
     </div>
@@ -188,7 +188,7 @@
          */
 
         // ==========================================
-        // 1. MAJOR WORLD CITIES DATABASE
+        // 1. MAJOR WORLD CITIES DATABASE (150+ CITIES)
         // ==========================================
         const CITIES = [
             { name: "Tokyo", lat: 35.6762, lon: 139.6503 },
@@ -791,6 +791,7 @@
             const qPitch = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), pitch);
             earthGroup.quaternion.premultiply(qPitch);
 
+            // Offset off the great-circle plane so the geodesic arc visibly curves on screen
             const vAWorld = posA.clone().applyQuaternion(earthGroup.quaternion).normalize();
             const vBWorld = posB.clone().applyQuaternion(earthGroup.quaternion).normalize();
             const chordDir = vBWorld.clone().sub(vAWorld);
@@ -842,6 +843,7 @@
             const cityA = CITIES[idxA];
             let idxB = Math.floor(Math.random() * CITIES.length);
 
+            // 80% chance to pick a destination within a similar latitude band (±30%)
             const enforceSimilarLatitude = Math.random() < 0.80;
             const latTolerance = Math.max(12, Math.abs(cityA.lat) * 0.30);
 
@@ -943,6 +945,7 @@
             const startArcPos = state.startCity === 'B' ? state.posB : state.posA;
             const endArcPos = state.startCity === 'B' ? state.posA : state.posB;
             state.optimalArcPoints = buildOptimalArcPoints(startArcPos, endArcPos);
+            // Wait 400ms, then animate the shortest path over the remaining 1000ms (1.4s total reveal)
             state.optimalAnimStartTime = performance.now() + 400;
 
             const optimalKm = angularDistance(state.posA, state.posB) * REAL_EARTH_RADIUS_KM;
@@ -1127,46 +1130,60 @@
         });
 
         // ==========================================
-        // GLOBAL INTERNET GAMES COUNTER
+        // 10. GLOBAL INTERNET GAMES COUNTER (FIREBASE RTDB)
         // ==========================================
-        const COUNTER_BASE_URL = 'https://api.counterapi.dev/v1/mathbiceps-geodesic/games-played';
+        const FIREBASE_PLAYS_URL = 'https://geodesic-counter-default-rtdb.firebaseio.com/plays.json';
+        let localKnownCount = 0;
 
         function renderGlobalCounter(count) {
             if (typeof count !== 'number' || Number.isNaN(count)) return;
+            localKnownCount = Math.max(localKnownCount, count);
             const countEl = document.getElementById('global-games-count');
-            const wrapEl = document.getElementById('global-counter-wrap');
-            if (countEl && wrapEl) {
-                countEl.textContent = count.toLocaleString();
-                wrapEl.classList.remove('opacity-0');
+            const labelEl = document.getElementById('global-games-label');
+            if (countEl) {
+                countEl.textContent = localKnownCount.toLocaleString();
+            }
+            if (labelEl) {
+                labelEl.textContent = localKnownCount === 1 ? 'game played worldwide' : 'games played worldwide';
             }
         }
 
         async function fetchGlobalGamesCount() {
             try {
-                const res = await fetch(`${COUNTER_BASE_URL}/`);
+                const res = await fetch(FIREBASE_PLAYS_URL, { cache: 'no-store' });
                 if (!res.ok) return;
-                const data = await res.json();
-                if (typeof data.count === 'number') {
-                    renderGlobalCounter(data.count);
+                const val = await res.json();
+                if (typeof val === 'number' && !Number.isNaN(val)) {
+                    renderGlobalCounter(val);
                 }
             } catch (err) {
-                // Fail silently if offline or blocked
+                // Fail silently if offline
             }
         }
 
         async function incrementGlobalGamesCount() {
+            // Optimistically update UI immediately
+            renderGlobalCounter(localKnownCount + 1);
             try {
-                const res = await fetch(`${COUNTER_BASE_URL}/up`);
+                // Use Firebase REST atomic ServerValue increment so concurrent players never overwrite each other
+                const res = await fetch(FIREBASE_PLAYS_URL, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ '.sv': { increment: 1 } })
+                });
                 if (!res.ok) return;
-                const data = await res.json();
-                if (typeof data.count === 'number') {
-                    renderGlobalCounter(data.count);
+                const updatedVal = await res.json();
+                if (typeof updatedVal === 'number' && !Number.isNaN(updatedVal)) {
+                    renderGlobalCounter(updatedVal);
                 }
             } catch (err) {
-                // Fail silently if offline or blocked
+                // Fail silently if offline
             }
         }
 
+        // ==========================================
+        // 11. RENDER & ANIMATION LOOP
+        // ==========================================
         function handleWindowResize() {
             camera.aspect = window.innerWidth / window.innerHeight;
             camera.updateProjectionMatrix();
