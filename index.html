@@ -1,0 +1,1303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Geodesic — Spherical Path Game</title>
+    <!-- Tailwind CSS for clean, responsive UI overlays -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Three.js for 3D WebGL Globe -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- Inter & JetBrains Mono Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+    <style>
+        * {
+            box-sizing: border-box;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-touch-callout: none;
+        }
+
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #070709;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            color: #f4f4f6;
+            touch-action: none; /* Prevent browser scroll/zoom on mobile */
+        }
+
+        #canvas-container {
+            position: fixed;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            outline: none;
+        }
+
+        /* Floating 3D-projected City Labels */
+        .city-label {
+            position: absolute;
+            transform: translate(-50%, -140%);
+            pointer-events: none;
+            font-size: 0.85rem;
+            font-weight: 500;
+            letter-spacing: 0.04em;
+            color: #ffffff;
+            background: rgba(12, 12, 15, 0.78);
+            backdrop-filter: blur(6px);
+            -webkit-backdrop-filter: blur(6px);
+            padding: 4px 10px;
+            border-radius: 9999px;
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            white-space: nowrap;
+            transition: opacity 0.2s ease, transform 0.1s linear;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.6);
+            z-index: 10;
+        }
+
+        .city-label::after {
+            content: '';
+            position: absolute;
+            bottom: -4px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 6px;
+            height: 6px;
+            background: #ffffff;
+            border-radius: 50%;
+            box-shadow: 0 0 8px #ffffff;
+        }
+
+        .city-label.active-start {
+            border-color: #3b82f6;
+            box-shadow: 0 0 16px rgba(59, 130, 246, 0.45);
+        }
+
+        .city-label.active-start::after {
+            background: #3b82f6;
+            box-shadow: 0 0 10px #3b82f6;
+        }
+
+        .mono {
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        /* Subtle pulse animation for target indicators */
+        @keyframes softPulse {
+            0%, 100% { opacity: 0.85; }
+            50% { opacity: 1; }
+        }
+
+        .fade-in {
+            animation: fadeIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- 3D Globe Container -->
+    <div id="canvas-container"></div>
+
+    <!-- Floating City Name Overlays (Only A and B shown) -->
+    <div id="label-a" class="city-label hidden"></div>
+    <div id="label-b" class="city-label hidden"></div>
+
+    <!-- Top UI: Minimalist Reset / Try Again Trigger (Shown during active gameplay) -->
+    <div id="top-controls" class="fixed top-6 left-0 right-0 z-20 flex justify-center pointer-events-none hidden">
+        <button id="btn-try-again" 
+                class="pointer-events-auto px-4 py-2 rounded-full text-xs font-medium tracking-wider uppercase text-zinc-300 bg-zinc-900/75 hover:bg-zinc-800/90 hover:text-white border border-zinc-700/60 backdrop-blur-md transition-all duration-200 shadow-lg active:scale-95 flex items-center gap-2">
+            <span>Try Again</span>
+            <span class="hidden sm:inline-block text-[10px] text-zinc-500 mono border border-zinc-700/80 px-1.5 py-0.5 rounded">ESC</span>
+        </button>
+    </div>
+
+    <!-- Center Start Overlay -->
+    <div id="start-overlay" class="fixed inset-0 z-30 flex flex-col items-center justify-center bg-black/55 backdrop-blur-sm transition-opacity duration-500">
+        <div class="text-center px-6 max-w-md fade-in">
+            <h1 class="text-3xl sm:text-4xl font-light tracking-[0.22em] uppercase text-white mb-3">
+                Geodesic
+            </h1>
+            <p class="text-xs sm:text-sm text-zinc-400 font-light tracking-wide mb-8 leading-relaxed">
+                Trace the shortest great-circle path between two cities across the globe.
+            </p>
+            <button id="btn-play" 
+                    class="px-9 py-3.5 rounded-full bg-white text-black text-xs sm:text-sm font-semibold tracking-[0.18em] uppercase hover:bg-zinc-200 transition-all duration-200 shadow-[0_0_30px_rgba(255,255,255,0.25)] active:scale-95 cursor-pointer">
+                Play
+            </button>
+        </div>
+    </div>
+
+    <!-- Bottom Result Overlay (Score + Optimal Path Comparison + Play Again) -->
+    <div id="result-overlay" class="fixed bottom-7 left-0 right-0 z-20 flex flex-col items-center justify-end pointer-events-none hidden px-4">
+        <div class="pointer-events-auto bg-zinc-950/85 border border-zinc-800/90 backdrop-blur-xl rounded-2xl px-6 py-4 shadow-2xl flex flex-col items-center gap-3 fade-in max-w-xs w-full">
+            
+            <!-- Accuracy Score -->
+            <div class="flex flex-col items-center">
+                <span class="text-[10px] uppercase tracking-[0.2em] text-zinc-500 font-medium">Accuracy</span>
+                <div id="score-value" class="text-3xl sm:text-4xl font-light text-white mono tracking-tight mt-0.5">
+                    0.0%
+                </div>
+            </div>
+
+            <!-- Legend / Distance Metric -->
+            <div class="w-full flex items-center justify-between text-[11px] text-zinc-400 border-t border-zinc-800/80 pt-2.5 px-1">
+                <div class="flex items-center gap-1.5">
+                    <span class="w-2 h-2 rounded-full bg-blue-500 inline-block shadow-[0_0_6px_#3b82f6]"></span>
+                    <span>Yours: <strong id="user-dist" class="text-zinc-200 font-normal mono">0 km</strong></span>
+                </div>
+                <div class="flex items-center gap-1.5">
+                    <span class="w-2 h-2 rounded-full bg-white inline-block shadow-[0_0_6px_#ffffff]"></span>
+                    <span>Shortest: <strong id="opt-dist" class="text-zinc-200 font-normal mono">0 km</strong></span>
+                </div>
+            </div>
+
+            <!-- Small Play Again Button -->
+            <button id="btn-play-again" 
+                    class="mt-1 w-full py-2.5 px-5 rounded-xl bg-white hover:bg-zinc-200 text-black text-xs font-semibold tracking-[0.15em] uppercase transition-all duration-150 active:scale-95 shadow-md cursor-pointer">
+                Play Again
+            </button>
+        </div>
+    </div>
+
+    <!-- Subtle Status / Controls Hint at bottom when playing -->
+    <div id="hint-bar" class="fixed bottom-4 left-0 right-0 z-10 text-center pointer-events-none hidden">
+        <p class="text-[11px] text-zinc-500 tracking-wider font-light">
+            Click &amp; drag from either city to connect &bull; Drag empty space or use Arrow keys to rotate
+        </p>
+    </div>
+
+    <script>
+        /**
+         * GEODESIC — Minimalist 3D Spherical Pathfinding Game
+         * 
+         * Architecture:
+         * 1. Comprehensive Major World Cities dataset (lat, lon).
+         * 2. Procedural Monochrome Earth Renderer (Continents + Country Borders + Graticule lines generated onto an offscreen high-res canvas texture).
+         * 3. Interactive 3D Raycasting on Sphere:
+         *    - Clicking/touching City A or City B starts a blue 3D geodesic ribbon/tube path.
+         *    - Dragging across the globe projects cursor onto the sphere surface, recording waypoints.
+         *    - Reaching the destination city triggers the 1.4s reveal sequence with a 1.0s shortest-path animation.
+         * 4. Multi-touch & Keyboard Rotation:
+         *    - Arrow keys smoothly rotate the Earth.
+         *    - Dragging outside a city rotates the Earth.
+         *    - Using a second finger while drawing on mobile smoothly rotates the Earth simultaneously.
+         */
+
+        // ==========================================
+        // 1. MAJOR WORLD CITIES DATABASE
+        // ==========================================
+        const CITIES = [
+            { name: "Tokyo", lat: 35.6762, lon: 139.6503 },
+            { name: "Delhi", lat: 28.7041, lon: 77.1025 },
+            { name: "Shanghai", lat: 31.2304, lon: 121.4737 },
+            { name: "São Paulo", lat: -23.5505, lon: -46.6333 },
+            { name: "Mexico City", lat: 19.4326, lon: -99.1332 },
+            { name: "Cairo", lat: 30.0444, lon: 31.2357 },
+            { name: "Mumbai", lat: 19.0760, lon: 72.8777 },
+            { name: "Beijing", lat: 39.9042, lon: 116.4074 },
+            { name: "Osaka", lat: 34.6937, lon: 135.5023 },
+            { name: "New York", lat: 40.7128, lon: -74.0060 },
+            { name: "Karachi", lat: 24.8607, lon: 67.0011 },
+            { name: "Buenos Aires", lat: -34.6037, lon: -58.3816 },
+            { name: "Istanbul", lat: 41.0082, lon: 28.9784 },
+            { name: "Kolkata", lat: 22.5726, lon: 88.3639 },
+            { name: "Manila", lat: 14.5995, lon: 120.9842 },
+            { name: "Lagos", lat: 6.5244, lon: 3.3792 },
+            { name: "Rio de Janeiro", lat: -22.9068, lon: -43.1729 },
+            { name: "Los Angeles", lat: 34.0522, lon: -118.2437 },
+            { name: "Moscow", lat: 55.7558, lon: 37.6173 },
+            { name: "Paris", lat: 48.8566, lon: 2.3522 },
+            { name: "Bogotá", lat: 4.7110, lon: -74.0721 },
+            { name: "Jakarta", lat: -6.2088, lon: 106.8456 },
+            { name: "London", lat: 51.5074, lon: -0.1278 },
+            { name: "Lima", lat: -12.0464, lon: -77.0428 },
+            { name: "Bangkok", lat: 13.7563, lon: 100.5018 },
+            { name: "Seoul", lat: 37.5665, lon: 126.9780 },
+            { name: "Nagpur", lat: 21.1458, lon: 79.0882 },
+            { name: "Bengaluru", lat: 12.9716, lon: 77.5946 },
+            { name: "Tehran", lat: 35.6892, lon: 51.3890 },
+            { name: "Chicago", lat: 41.8781, lon: -87.6298 },
+            { name: "Hong Kong", lat: 22.3193, lon: 114.1694 },
+            { name: "Kuala Lumpur", lat: 3.1390, lon: 101.6869 },
+            { name: "Madrid", lat: 40.4168, lon: -3.7038 },
+            { name: "Toronto", lat: 43.6532, lon: -79.3832 },
+            { name: "Santiago", lat: -33.4489, lon: -70.6693 },
+            { name: "Riyadh", lat: 24.7136, lon: 46.6753 },
+            { name: "Singapore", lat: 1.3521, lon: 103.8198 },
+            { name: "Sydney", lat: -33.8688, lon: 151.2093 },
+            { name: "Melbourne", lat: -37.8136, lon: 144.9631 },
+            { name: "Berlin", lat: 52.5200, lon: 13.4050 },
+            { name: "Rome", lat: 41.9028, lon: 12.4964 },
+            { name: "Johannesburg", lat: -26.2041, lon: 28.0473 },
+            { name: "Nairobi", lat: -1.2921, lon: 36.8219 },
+            { name: "Casablanca", lat: 33.5731, lon: -7.5898 },
+            { name: "Dubai", lat: 25.2048, lon: 55.2708 },
+            { name: "San Francisco", lat: 37.7749, lon: -122.4194 },
+            { name: "Vancouver", lat: 49.2827, lon: -123.1207 },
+            { name: "Miami", lat: 25.7617, lon: -80.1918 },
+            { name: "Anchorage", lat: 61.2181, lon: -149.9003 },
+            { name: "Reykjavik", lat: 64.1466, lon: -21.9426 },
+            { name: "Stockholm", lat: 59.3293, lon: 18.0686 },
+            { name: "Warsaw", lat: 52.2297, lon: 21.0122 },
+            { name: "Athens", lat: 37.9838, lon: 23.7275 },
+            { name: "Kyiv", lat: 50.4501, lon: 30.5234 },
+            { name: "Almaty", lat: 43.2220, lon: 76.8512 },
+            { name: "Taipei", lat: 25.0330, lon: 121.5654 },
+            { name: "Perth", lat: -31.9505, lon: 115.8605 },
+            { name: "Auckland", lat: -36.8485, lon: 174.7633 },
+            { name: "Honolulu", lat: 21.3069, lon: -157.8583 },
+            { name: "Dakar", lat: 14.7167, lon: -17.4677 },
+            { name: "Addis Ababa", lat: 9.0320, lon: 38.7469 },
+            { name: "Cape Town", lat: -33.9249, lon: 18.4241 },
+            { name: "Havana", lat: 23.1136, lon: -82.3666 },
+            { name: "Panama City", lat: 8.9824, lon: -79.5199 },
+            // 100 Additional Major Global Cities
+            { name: "Shenzhen", lat: 22.5431, lon: 114.0579 },
+            { name: "Guangzhou", lat: 23.1291, lon: 113.2644 },
+            { name: "Chengdu", lat: 30.5728, lon: 104.0668 },
+            { name: "Chongqing", lat: 29.5630, lon: 106.5516 },
+            { name: "Wuhan", lat: 30.5928, lon: 114.3055 },
+            { name: "Xi'an", lat: 34.3416, lon: 108.9398 },
+            { name: "Nanjing", lat: 32.0603, lon: 118.7969 },
+            { name: "Tianjin", lat: 39.3434, lon: 117.3616 },
+            { name: "Harbin", lat: 45.8038, lon: 126.5349 },
+            { name: "Ulaanbaatar", lat: 47.8864, lon: 106.9057 },
+            { name: "Busan", lat: 35.1796, lon: 129.0756 },
+            { name: "Sapporo", lat: 43.0618, lon: 141.3545 },
+            { name: "Fukuoka", lat: 33.5902, lon: 130.4017 },
+            { name: "Hanoi", lat: 21.0285, lon: 105.8542 },
+            { name: "Ho Chi Minh City", lat: 10.8231, lon: 106.6297 },
+            { name: "Phnom Penh", lat: 11.5564, lon: 104.9282 },
+            { name: "Yangon", lat: 16.8409, lon: 96.1735 },
+            { name: "Dhaka", lat: 23.8103, lon: 90.4125 },
+            { name: "Kathmandu", lat: 27.7172, lon: 85.3240 },
+            { name: "Colombo", lat: 6.9271, lon: 79.8612 },
+            { name: "Chennai", lat: 13.0827, lon: 80.2707 },
+            { name: "Hyderabad", lat: 17.3850, lon: 78.4867 },
+            { name: "Ahmedabad", lat: 23.0225, lon: 72.5714 },
+            { name: "Pune", lat: 18.5204, lon: 73.8567 },
+            { name: "Jaipur", lat: 26.9124, lon: 75.7873 },
+            { name: "Lahore", lat: 31.5204, lon: 74.3587 },
+            { name: "Islamabad", lat: 33.6844, lon: 73.0479 },
+            { name: "Kabul", lat: 34.5553, lon: 69.2075 },
+            { name: "Tashkent", lat: 41.2995, lon: 69.2401 },
+            { name: "Baku", lat: 40.4093, lon: 49.8671 },
+            { name: "Tbilisi", lat: 41.7151, lon: 44.8271 },
+            { name: "Yerevan", lat: 40.1872, lon: 44.5152 },
+            { name: "Baghdad", lat: 33.3152, lon: 44.3661 },
+            { name: "Kuwait City", lat: 29.3759, lon: 47.9774 },
+            { name: "Doha", lat: 25.2854, lon: 51.5310 },
+            { name: "Abu Dhabi", lat: 24.4539, lon: 54.3773 },
+            { name: "Muscat", lat: 23.5880, lon: 58.3829 },
+            { name: "Jeddah", lat: 21.4858, lon: 39.1925 },
+            { name: "Amman", lat: 31.9454, lon: 35.9284 },
+            { name: "Beirut", lat: 33.8938, lon: 35.5018 },
+            { name: "Tel Aviv", lat: 32.0853, lon: 34.7818 },
+            { name: "Ankara", lat: 39.9334, lon: 32.8597 },
+            { name: "Izmir", lat: 38.4237, lon: 27.1428 },
+            { name: "Bucharest", lat: 44.4268, lon: 26.1025 },
+            { name: "Sofia", lat: 42.6977, lon: 23.3219 },
+            { name: "Belgrade", lat: 44.7866, lon: 20.4489 },
+            { name: "Budapest", lat: 47.4979, lon: 19.0402 },
+            { name: "Vienna", lat: 48.2082, lon: 16.3738 },
+            { name: "Prague", lat: 50.0755, lon: 14.4378 },
+            { name: "Munich", lat: 48.1351, lon: 11.5820 },
+            { name: "Frankfurt", lat: 50.1109, lon: 8.6821 },
+            { name: "Hamburg", lat: 53.5511, lon: 9.9937 },
+            { name: "Zurich", lat: 47.3769, lon: 8.5417 },
+            { name: "Milan", lat: 45.4642, lon: 9.1900 },
+            { name: "Naples", lat: 40.8518, lon: 14.2681 },
+            { name: "Barcelona", lat: 41.3874, lon: 2.1686 },
+            { name: "Lisbon", lat: 38.7223, lon: -9.1393 },
+            { name: "Amsterdam", lat: 52.3676, lon: 4.9041 },
+            { name: "Brussels", lat: 50.8503, lon: 4.3517 },
+            { name: "Copenhagen", lat: 55.6761, lon: 12.5683 },
+            { name: "Oslo", lat: 59.9139, lon: 10.7522 },
+            { name: "Helsinki", lat: 60.1699, lon: 24.9384 },
+            { name: "Saint Petersburg", lat: 59.9343, lon: 30.3351 },
+            { name: "Minsk", lat: 53.9006, lon: 27.5590 },
+            { name: "Dublin", lat: 53.3498, lon: -6.2603 },
+            { name: "Edinburgh", lat: 55.9533, lon: -3.1883 },
+            { name: "Manchester", lat: 53.4808, lon: -2.2426 },
+            { name: "Algiers", lat: 36.7538, lon: 3.0588 },
+            { name: "Tunis", lat: 36.8065, lon: 10.1815 },
+            { name: "Tripoli", lat: 32.8872, lon: 13.1913 },
+            { name: "Alexandria", lat: 31.2001, lon: 29.9187 },
+            { name: "Khartoum", lat: 15.5007, lon: 32.5599 },
+            { name: "Accra", lat: 5.6037, lon: -0.1870 },
+            { name: "Abidjan", lat: 5.3600, lon: -4.0083 },
+            { name: "Kinshasa", lat: -4.4419, lon: 15.2663 },
+            { name: "Luanda", lat: -8.8390, lon: 13.2894 },
+            { name: "Dar es Salaam", lat: -6.7924, lon: 39.2083 },
+            { name: "Kampala", lat: 0.3476, lon: 32.5825 },
+            { name: "Kigali", lat: -1.9441, lon: 30.0619 },
+            { name: "Lusaka", lat: -15.3875, lon: 28.3228 },
+            { name: "Harare", lat: -17.8252, lon: 31.0335 },
+            { name: "Antananarivo", lat: -18.8792, lon: 47.5079 },
+            { name: "Montreal", lat: 45.5017, lon: -73.5673 },
+            { name: "Calgary", lat: 51.0447, lon: -114.0719 },
+            { name: "Seattle", lat: 47.6062, lon: -122.3321 },
+            { name: "Denver", lat: 39.7392, lon: -104.9903 },
+            { name: "Phoenix", lat: 33.4484, lon: -112.0740 },
+            { name: "Dallas", lat: 32.7767, lon: -96.7970 },
+            { name: "Houston", lat: 29.7604, lon: -95.3698 },
+            { name: "Atlanta", lat: 33.7490, lon: -84.3880 },
+            { name: "Boston", lat: 42.3601, lon: -71.0589 },
+            { name: "Washington D.C.", lat: 38.9072, lon: -77.0369 },
+            { name: "Monterrey", lat: 25.6866, lon: -100.3161 },
+            { name: "Guadalajara", lat: 20.6597, lon: -103.3496 },
+            { name: "San José", lat: 9.9281, lon: -84.0907 },
+            { name: "Medellín", lat: 6.2442, lon: -75.5812 },
+            { name: "Quito", lat: -0.1807, lon: -78.4678 },
+            { name: "Caracas", lat: 10.4806, lon: -66.9036 },
+            { name: "La Paz", lat: -16.4897, lon: -68.1193 },
+            { name: "Montevideo", lat: -34.9011, lon: -56.1645 },
+            { name: "Brasília", lat: -15.7975, lon: -47.8919 },
+            { name: "Brisbane", lat: -27.4705, lon: 153.0260 },
+            { name: "Adelaide", lat: -34.9285, lon: 138.6007 },
+            { name: "Wellington", lat: -41.2865, lon: 174.7762 }
+        ];
+
+        // ==========================================
+        // 2. DETAILED CONTINENT & COUNTRY BOUNDARY DATA (LAT, LON)
+        // Ensures crisp, authentic monochrome landmasses and internal country borders
+        // ==========================================
+        const CONTINENT_POLYGONS = [
+            // North America
+            [[70,-162],[71,-156],[70,-140],[69,-133],[62,-165],[55,-163],[60,-148],[58,-136],[54,-130],[50,-127],[48,-124],[45,-124],[40,-124],[37,-122],[34,-120],[32,-117],[28,-114],[23,-110],[25,-108],[20,-105],[16,-95],[14,-87],[10,-85],[9,-83],[8,-78],[11,-75],[15,-83],[18,-88],[21,-87],[21,-90],[19,-96],[26,-97],[29,-95],[30,-89],[30,-84],[25,-80],[31,-81],[35,-75],[39,-74],[41,-70],[44,-66],[47,-65],[46,-60],[50,-60],[52,-56],[58,-63],[62,-65],[60,-77],[55,-79],[52,-80],[56,-88],[60,-94],[65,-88],[68,-95],[71,-105],[70,-125],[70,-162]],
+            // Canadian Arctic Islands (Baffin, Victoria, Ellesmere)
+            [[62,-66],[66,-62],[72,-75],[74,-85],[70,-86],[65,-76],[62,-66]],
+            [[69,-115],[72,-118],[73,-105],[69,-102],[69,-115]],
+            [[76,-88],[82,-85],[83,-65],[78,-74],[76,-88]],
+            // Cuba & Hispaniola
+            [[22,-84],[23,-80],[20,-75],[20,-77],[22,-84]],
+            [[19,-74],[20,-70],[18,-69],[18,-74],[19,-74]],
+            // Greenland
+            [[60,-44],[65,-38],[70,-22],[77,-18],[82,-30],[83,-45],[81,-62],[76,-68],[72,-55],[66,-53],[60,-44]],
+            // Iceland
+            [[64,-24],[66,-23],[66,-14],[64,-14],[64,-24]],
+            // South America
+            [[11,-75],[12,-71],[10,-62],[6,-52],[0,-50],[-3,-41],[-6,-35],[-13,-38],[-22,-41],[-24,-46],[-30,-50],[-35,-53],[-38,-57],[-42,-63],[-47,-66],[-52,-68],[-55,-67],[-54,-71],[-48,-75],[-41,-74],[-33,-71],[-23,-70],[-18,-70],[-14,-76],[-5,-81],[0,-80],[5,-77],[11,-75]],
+            // Africa
+            [[35,-6],[37,10],[33,12],[31,20],[32,32],[28,34],[20,37],[12,44],[11,51],[2,45],[-4,40],[-11,40],[-17,36],[-25,33],[-30,31],[-34,25],[-34,18],[-28,16],[-18,12],[-12,13],[-5,12],[4,9],[6,3],[5,-4],[4,-8],[8,-13],[14,-17],[21,-17],[28,-13],[32,-9],[35,-6]],
+            // Madagascar
+            [[-12,49],[-16,50],[-25,47],[-25,44],[-17,44],[-12,49]],
+            // Europe
+            [[36,-9],[37,-2],[41,2],[43,3],[43,6],[44,9],[41,14],[38,16],[40,18],[44,13],[45,14],[40,20],[37,22],[38,24],[41,29],[45,29],[46,32],[45,38],[47,39],[55,38],[60,30],[65,35],[69,32],[71,26],[69,16],[63,6],[60,5],[58,7],[59,11],[56,13],[56,16],[60,18],[65,22],[65,25],[60,22],[59,24],[55,21],[54,14],[54,10],[57,10],[54,8],[53,5],[51,2],[49,-2],[48,-5],[44,-1],[43,-9],[36,-9]],
+            // UK & Ireland
+            [[50,-5],[52,-5],[55,-5],[58,-5],[58,-3],[56,-3],[53,0],[51,1],[50,-5]],
+            [[51,-10],[54,-10],[55,-6],[52,-6],[51,-10]],
+            // Asia
+            [[41,29],[42,35],[41,41],[45,39],[47,39],[55,38],[60,30],[68,40],[69,55],[72,70],[76,95],[74,115],[71,140],[68,165],[66,178],[60,165],[52,158],[58,150],[54,138],[48,139],[43,132],[39,128],[35,129],[35,126],[39,125],[40,121],[38,118],[35,120],[31,122],[26,120],[22,114],[21,108],[16,108],[11,109],[9,105],[13,101],[7,103],[2,104],[5,100],[14,98],[16,94],[22,91],[21,87],[16,82],[10,79],[8,77],[15,74],[21,72],[23,68],[25,66],[25,57],[27,51],[30,48],[28,49],[24,54],[22,59],[17,54],[13,44],[20,39],[28,35],[32,35],[36,36],[36,28],[40,26],[41,29]],
+            // Sri Lanka & Taiwan
+            [[9,80],[7,82],[6,80],[8,79],[9,80]],
+            [[25,121],[24,122],[22,121],[23,120],[25,121]],
+            // Japan
+            [[31,130],[34,132],[35,137],[38,140],[41,141],[43,145],[45,142],[42,140],[38,139],[35,133],[33,130],[31,130]],
+            // Indonesia / Maritime SE Asia (Sumatra, Java, Borneo, Sulawesi, New Guinea)
+            [[5,96],[1,103],[-6,105],[-3,101],[2,98],[5,96]],
+            [[-6,106],[-7,114],[-8,114],[-8,106],[-6,106]],
+            [[6,116],[2,118],[-3,116],[-3,110],[2,109],[6,116]],
+            [[1,120],[-5,120],[-5,123],[1,124],[1,120]],
+            [[-1,131],[-3,141],[-7,148],[-10,150],[-8,141],[-5,135],[-1,131]],
+            // Philippines
+            [[18,121],[14,123],[7,126],[6,124],[12,121],[18,121]],
+            // Australia & Tasmania
+            [[-12,131],[-12,136],[-15,136],[-17,140],[-11,142],[-16,146],[-23,151],[-28,153],[-35,151],[-38,147],[-38,141],[-35,137],[-32,133],[-32,126],[-34,122],[-35,116],[-31,115],[-22,114],[-18,122],[-14,126],[-12,131]],
+            [[-41,145],[-41,148],[-43,147],[-43,145],[-41,145]],
+            // New Zealand
+            [[-35,173],[-38,178],[-41,175],[-44,172],[-46,168],[-44,168],[-41,172],[-38,174],[-35,173]],
+            // Antarctica
+            [[-72,-180],[-68,-140],[-73,-100],[-65,-60],[-72,-30],[-70,0],[-68,40],[-67,80],[-66,120],[-70,160],[-72,180],[-90,180],[-90,-180],[-72,-180]]
+        ];
+
+        // Internal Country Borders (Lat, Lon Polylines)
+        const COUNTRY_BORDERS = [
+            // North America (Canada-USA, USA-Mexico, Central America)
+            [[49,-123],[49,-95],[48,-89],[46,-84],[43,-82],[45,-75],[45,-71],[47,-68]], // Canada - US
+            [[60,-141],[69,-141]], // Alaska - Canada
+            [[32,-117],[31,-111],[32,-106],[29,-103],[26,-97]], // US - Mexico
+            [[18,-92],[17,-89],[15,-88]], // Mexico - Guatemala/Belize
+            // South America
+            [[11,-72],[7,-72],[4,-67],[1,-67]], // Colombia - Venezuela
+            [[5,-60],[2,-59],[1,-52]], // Guyana/Suriname/French Guiana - Brazil
+            [[1,-79],[-1,-75],[-4,-80]], // Colombia - Ecuador - Peru
+            [[-1,-70],[-7,-73],[-11,-70],[-18,-69]], // Colombia/Peru - Brazil/Bolivia
+            [[-11,-69],[-10,-65],[-16,-60],[-20,-58]], // Bolivia - Brazil
+            [[-18,-69],[-22,-68],[-33,-70],[-41,-72],[-52,-70]], // Chile - Bolivia/Argentina
+            [[-22,-67],[-22,-62],[-25,-58],[-27,-55],[-30,-57],[-34,-54]], // Bolivia/Paraguay/Brazil/Uruguay - Argentina
+            // Europe
+            [[43,-2],[42,3]], // Spain - France
+            [[42,-8],[37,-7]], // Portugal - Spain
+            [[44,7],[46,7],[48,8],[49,6],[51,3]], // France - Italy/Switzerland/Germany/Belgium
+            [[46,7],[47,10],[47,13],[46,14]], // Italy - Switzerland/Austria/Slovenia
+            [[55,9],[53,7],[51,6],[49,6]], // Germany - Denmark/Netherlands/Belgium
+            [[54,14],[51,15],[50,12],[49,13],[48,17]], // Germany/Austria - Poland/Czechia
+            [[54,20],[54,23],[51,24],[49,23]], // Poland - Lithuania/Belarus/Ukraine
+            [[49,18],[49,22],[48,22],[47,17]], // Slovakia - Poland/Ukraine/Hungary
+            [[48,23],[48,28],[46,30]], // Ukraine - Romania/Moldova
+            [[45,28],[44,23],[42,22],[41,26]], // Romania/Serbia/Greece - Bulgaria
+            [[46,14],[45,19],[42,19],[41,21]], // Croatia/Bosnia/Serbia/Albania
+            [[59,11],[64,14],[69,20]], // Norway - Sweden
+            [[69,21],[66,24],[60,24]], // Sweden/Norway - Finland
+            [[56,21],[56,28],[59,28],[56,31],[52,32],[50,38],[47,39]], // Baltic/Belarus/Ukraine - Russia
+            // Africa
+            [[35,-2],[32,-1],[28,-9],[21,-17]], // Morocco - Algeria/Mauritania
+            [[37,8],[33,10],[30,10],[24,10],[20,12],[15,14]], // Tunisia/Libya/Niger - Algeria
+            [[32,25],[22,25],[22,36]], // Egypt - Libya/Sudan
+            [[22,25],[20,24],[16,24],[10,24]], // Libya/Chad - Sudan
+            [[21,-13],[16,-12],[15,-4],[11,-5],[11,3],[14,14]], // Mauritania/Mali/Burkina/Niger
+            [[14,-17],[12,-12],[8,-10],[6,-8],[5,-3],[6,1],[6,3],[4,8]], // West Africa coastal borders
+            [[13,14],[8,13],[4,10],[2,15],[4,18],[4,27]], // Nigeria/Cameroon/CAR
+            [[10,24],[9,34],[4,35],[4,41]], // South Sudan/Ethiopia/Somalia
+            [[2,10],[1,14],[-4,12],[-6,13],[-6,22],[-11,22],[-12,29],[-4,29],[2,30]], // Gabon/Congo/DRC
+            [[-1,30],[-1,34],[-4,40]], // Uganda/Kenya - Tanzania
+            [[-17,12],[-18,21],[-18,25],[-22,29],[-29,31]], // Angola/Namibia/Botswana/Zimbabwe - South Africa
+            [[-11,30],[-14,33],[-16,35],[-26,32]], // Zambia/Malawi/Mozambique
+            // Asia
+            [[41,44],[39,44],[37,42],[37,36]], // Turkey - Georgia/Armenia/Iran/Iraq/Syria
+            [[33,36],[32,39],[29,48]], // Syria/Jordan - Iraq/Saudi Arabia
+            [[29,48],[24,51],[22,55],[19,52],[17,43]], // Saudi Arabia - Kuwait/UAE/Oman/Yemen
+            [[39,48],[38,54],[37,61],[35,61],[30,61],[25,62]], // Iran - Azerbaijan/Turkmenistan/Afghanistan/Pakistan
+            [[51,51],[55,65],[51,80],[49,87]], // Russia - Kazakhstan
+            [[45,56],[41,56],[42,66],[41,70],[43,80]], // Kazakhstan - Uzbekistan/Kyrgyzstan
+            [[37,67],[37,74],[35,75],[32,75],[30,71],[24,69]], // Afghanistan/Pakistan - Tajikistan/China/India
+            [[35,78],[31,79],[28,85],[27,89],[28,97]], // India - China/Nepal/Bhutan
+            [[26,88],[22,89],[24,92],[22,92]], // India - Bangladesh
+            [[28,97],[24,98],[21,101],[22,106]], // China - Myanmar/Laos/Vietnam
+            [[21,98],[16,98],[14,102],[11,104]], // Myanmar/Thailand/Cambodia/Vietnam
+            [[50,88],[49,95],[50,105],[48,115],[45,119],[43,112],[42,105],[45,95],[48,91]], // Mongolia - Russia/China
+            [[53,120],[48,135],[43,131]], // China - Russia (Amur/Primorsky)
+            [[38,125],[38,128]] // North Korea - South Korea
+        ];
+
+        // ==========================================
+        // 3. GAME STATE & CONFIGURATION
+        // ==========================================
+        const EARTH_RADIUS = 10;
+        const REAL_EARTH_RADIUS_KM = 6371;
+        const CITY_HIT_ANGLE_THRESHOLD = 0.085; // ~4.8 degrees tolerance for snapping/clicking cities
+
+        const state = {
+            mode: 'MENU', // 'MENU' | 'PLAYING' | 'REVEALING' | 'RESULT'
+            cityA: null,
+            cityB: null,
+            posA: null, // THREE.Vector3 in Earth's local space
+            posB: null, // THREE.Vector3 in Earth's local space
+
+            // Drawing State
+            isDrawing: false,
+            drawPointerId: null,
+            startCity: null, // 'A' or 'B'
+            targetCity: null, // 'B' or 'A'
+            pathPoints: [], // Array of THREE.Vector3 in Earth's local space
+            revealTimeout: null,
+            optimalAnimStartTime: null,
+            optimalArcPoints: [],
+
+            // Rotation State
+            isRotating: false,
+            rotatePointerId: null,
+            lastRotatePos: { x: 0, y: 0 },
+            rotVelocity: { x: 0, y: 0 },
+            keysPressed: { ArrowUp: false, ArrowDown: false, ArrowLeft: false, ArrowRight: false }
+        };
+
+        // ==========================================
+        // 4. PROCEDURAL MONOCHROME EARTH TEXTURE
+        // ==========================================
+        function createMonochromeEarthTexture() {
+            const width = 2048;
+            const height = 1024;
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+
+            // 1. Deep dark obsidian ocean base
+            ctx.fillStyle = '#0c0d10';
+            ctx.fillRect(0, 0, width, height);
+
+            // 2. Subtle latitude / longitude graticule lines
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.045)';
+            ctx.lineWidth = 1;
+
+            for (let lon = -180; lon <= 180; lon += 15) {
+                const x = ((lon + 180) / 360) * width;
+                ctx.beginPath();
+                ctx.moveTo(x, 0);
+                ctx.lineTo(x, height);
+                ctx.stroke();
+            }
+
+            for (let lat = -90; lat <= 90; lat += 15) {
+                const y = ((90 - lat) / 180) * height;
+                ctx.beginPath();
+                ctx.moveTo(0, y);
+                ctx.lineTo(width, y);
+                ctx.stroke();
+            }
+
+            // Equator & Prime Meridian slightly brighter
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.09)';
+            ctx.beginPath();
+            ctx.moveTo(0, height / 2);
+            ctx.lineTo(width, height / 2);
+            ctx.moveTo(width / 2, 0);
+            ctx.lineTo(width / 2, height);
+            ctx.stroke();
+
+            // 3. Draw Landmasses (Monochrome Slate Fill + Crisp Light Gray Coastline)
+            ctx.fillStyle = '#202228';
+            ctx.strokeStyle = '#525663';
+            ctx.lineWidth = 1.6;
+            ctx.lineJoin = 'round';
+            ctx.lineCap = 'round';
+
+            CONTINENT_POLYGONS.forEach(poly => {
+                ctx.beginPath();
+                poly.forEach(([lat, lon], idx) => {
+                    const x = ((lon + 180) / 360) * width;
+                    const y = ((90 - lat) / 180) * height;
+                    if (idx === 0) ctx.moveTo(x, y);
+                    else ctx.lineTo(x, y);
+                });
+                ctx.closePath();
+                ctx.fill();
+                ctx.stroke();
+            });
+
+            // 4. Draw Internal Country Boundaries
+            ctx.strokeStyle = 'rgba(130, 136, 150, 0.42)';
+            ctx.lineWidth = 1.1;
+            COUNTRY_BORDERS.forEach(border => {
+                ctx.beginPath();
+                border.forEach(([lat, lon], idx) => {
+                    const x = ((lon + 180) / 360) * width;
+                    const y = ((90 - lat) / 180) * height;
+                    if (idx === 0) ctx.moveTo(x, y);
+                    else ctx.lineTo(x, y);
+                });
+                ctx.stroke();
+            });
+
+            // 5. Subtle Micro-Dots for all cities on the globe surface
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.24)';
+            CITIES.forEach(city => {
+                const x = ((city.lon + 180) / 360) * width;
+                const y = ((90 - city.lat) / 180) * height;
+                ctx.beginPath();
+                ctx.arc(x, y, 1.8, 0, Math.PI * 2);
+                ctx.fill();
+            });
+
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.anisotropy = 8;
+            return texture;
+        }
+
+        // ==========================================
+        // 5. THREE.JS SCENE, GLOBE & PATH MESHES
+        // ==========================================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x070709);
+
+        const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const INITIAL_CAMERA_PHI = THREE.MathUtils.degToRad(72); // Polar angle phi = 72 degrees
+
+        function updateCameraDistance() {
+            const aspect = window.innerWidth / window.innerHeight;
+            // Ensure the entire globe fits comfortably on both portrait mobile and widescreen desktop
+            const baseDist = aspect < 1 ? 33 / Math.max(aspect, 0.55) : 27;
+            const r = Math.min(Math.max(baseDist, 26), 54);
+            camera.position.set(
+                0,
+                r * Math.cos(INITIAL_CAMERA_PHI),
+                r * Math.sin(INITIAL_CAMERA_PHI)
+            );
+            camera.lookAt(0, 0, 0);
+        }
+        updateCameraDistance();
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        container.appendChild(renderer.domElement);
+
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.85);
+        scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.45);
+        dirLight.position.set(15, 20, 25);
+        scene.add(dirLight);
+
+        // Earth Group (Rotates as one unit)
+        const earthGroup = new THREE.Group();
+        scene.add(earthGroup);
+
+        // Earth Sphere Mesh
+        const earthGeo = new THREE.SphereGeometry(EARTH_RADIUS, 96, 96);
+        const earthMat = new THREE.MeshStandardMaterial({
+            map: createMonochromeEarthTexture(),
+            roughness: 0.85,
+            metalness: 0.1
+        });
+        const earthMesh = new THREE.Mesh(earthGeo, earthMat);
+        earthGroup.add(earthMesh);
+
+        // Subtle Monochrome Atmospheric Halo (Rim Glow)
+        const atmoGeo = new THREE.SphereGeometry(EARTH_RADIUS * 1.022, 64, 64);
+        const atmoMat = new THREE.MeshBasicMaterial({
+            color: 0x9ca3af,
+            transparent: true,
+            opacity: 0.06,
+            side: THREE.BackSide
+        });
+        const atmoMesh = new THREE.Mesh(atmoGeo, atmoMat);
+        earthGroup.add(atmoMesh);
+
+        // City A & City B 3D Beacons (Glowing Core + Pulse Ring)
+        function createCityMarker() {
+            const group = new THREE.Group();
+
+            const dotGeo = new THREE.SphereGeometry(0.16, 16, 16);
+            const dotMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+            const dot = new THREE.Mesh(dotGeo, dotMat);
+            group.add(dot);
+
+            const ringGeo = new THREE.RingGeometry(0.24, 0.33, 32);
+            const ringMat = new THREE.MeshBasicMaterial({
+                color: 0xffffff,
+                side: THREE.DoubleSide,
+                transparent: true,
+                opacity: 0.85
+            });
+            const ring = new THREE.Mesh(ringGeo, ringMat);
+            group.add(ring);
+
+            group.userData = { dot, ring };
+            group.visible = false;
+            earthGroup.add(group);
+            return group;
+        }
+
+        const markerA = createCityMarker();
+        const markerB = createCityMarker();
+
+        // Dynamic Path Meshes (User's Blue Path & Optimal White Geodesic Path)
+        let userPathMesh = null;
+        let optimalPathMesh = null;
+
+        function clearPaths() {
+            if (userPathMesh) {
+                earthGroup.remove(userPathMesh);
+                userPathMesh.geometry.dispose();
+                userPathMesh = null;
+            }
+            if (optimalPathMesh) {
+                earthGroup.remove(optimalPathMesh);
+                optimalPathMesh.geometry.dispose();
+                optimalPathMesh = null;
+            }
+        }
+
+        function updateUserPathMesh() {
+            if (userPathMesh) {
+                earthGroup.remove(userPathMesh);
+                userPathMesh.geometry.dispose();
+                userPathMesh = null;
+            }
+            if (state.pathPoints.length < 2) return;
+
+            // Lift points slightly above sphere surface to avoid z-fighting
+            const liftedPoints = state.pathPoints.map(p => p.clone().normalize().multiplyScalar(EARTH_RADIUS + 0.06));
+            const curve = new THREE.CatmullRomCurve3(liftedPoints);
+            const tubularSegments = Math.min(280, Math.max(24, liftedPoints.length * 3));
+            const tubeGeo = new THREE.TubeGeometry(curve, tubularSegments, 0.075, 8, false);
+            const tubeMat = new THREE.MeshBasicMaterial({ color: 0x3b82f6 }); // Vibrant Blue
+            userPathMesh = new THREE.Mesh(tubeGeo, tubeMat);
+            earthGroup.add(userPathMesh);
+        }
+
+        function buildOptimalArcPoints(p1, p2) {
+            // Spherical Linear Interpolation (SLERP) for exact great circle arc
+            const v1 = p1.clone().normalize();
+            const v2 = p2.clone().normalize();
+            const omega = Math.acos(THREE.MathUtils.clamp(v1.dot(v2), -1, 1));
+            const sinOmega = Math.sin(omega);
+
+            const segments = 96;
+            const arcPoints = [];
+
+            for (let i = 0; i <= segments; i++) {
+                const t = i / segments;
+                let dir;
+                if (sinOmega < 0.0001) {
+                    dir = v1.clone().lerp(v2, t).normalize();
+                } else {
+                    const a = Math.sin((1 - t) * omega) / sinOmega;
+                    const b = Math.sin(t * omega) / sinOmega;
+                    dir = v1.clone().multiplyScalar(a).add(v2.clone().multiplyScalar(b)).normalize();
+                }
+                arcPoints.push(dir.multiplyScalar(EARTH_RADIUS + 0.08));
+            }
+            return arcPoints;
+        }
+
+        function updateAnimatedOptimalPath(progress) {
+            if (optimalPathMesh) {
+                earthGroup.remove(optimalPathMesh);
+                optimalPathMesh.geometry.dispose();
+                optimalPathMesh = null;
+            }
+
+            const fullPoints = state.optimalArcPoints;
+            if (!fullPoints || fullPoints.length < 2) return;
+
+            const clampedProgress = THREE.MathUtils.clamp(progress, 0, 1);
+            if (clampedProgress <= 0.01) return;
+
+            const totalSegs = fullPoints.length - 1;
+            const exactIdx = clampedProgress * totalSegs;
+            const wholeIdx = Math.floor(exactIdx);
+            const frac = exactIdx - wholeIdx;
+
+            const visiblePoints = fullPoints.slice(0, wholeIdx + 1);
+            if (wholeIdx < totalSegs && frac > 0.001) {
+                const interp = fullPoints[wholeIdx].clone().lerp(fullPoints[wholeIdx + 1], frac);
+                visiblePoints.push(interp);
+            }
+
+            if (visiblePoints.length < 2) return;
+
+            const curve = new THREE.CatmullRomCurve3(visiblePoints);
+            const tubularSegments = Math.max(8, Math.round(96 * clampedProgress));
+            const tubeGeo = new THREE.TubeGeometry(curve, tubularSegments, 0.06, 8, false);
+            const tubeMat = new THREE.MeshBasicMaterial({
+                color: 0xffffff,
+                transparent: true,
+                opacity: 0.92
+            });
+            optimalPathMesh = new THREE.Mesh(tubeGeo, tubeMat);
+            earthGroup.add(optimalPathMesh);
+        }
+
+        // ==========================================
+        // 6. COORDINATE & GEODESIC MATH HELPERS
+        // ==========================================
+        function latLonToVector3(lat, lon, radius = EARTH_RADIUS) {
+            const phi = (90 - lat) * (Math.PI / 180);
+            const theta = (lon + 180) * (Math.PI / 180);
+
+            const x = -(radius * Math.sin(phi) * Math.cos(theta));
+            const z = (radius * Math.sin(phi) * Math.sin(theta));
+            const y = (radius * Math.cos(phi));
+
+            return new THREE.Vector3(x, y, z);
+        }
+
+        // Angular distance in radians between two 3D vectors on the sphere
+        function angularDistance(v1, v2) {
+            const n1 = v1.clone().normalize();
+            const n2 = v2.clone().normalize();
+            return Math.acos(THREE.MathUtils.clamp(n1.dot(n2), -1, 1));
+        }
+
+        // Total polyline distance along the sphere surface in km
+        function computePathDistanceKm(points) {
+            let totalRad = 0;
+            for (let i = 1; i < points.length; i++) {
+                totalRad += angularDistance(points[i - 1], points[i]);
+            }
+            return totalRad * REAL_EARTH_RADIUS_KM;
+        }
+
+        function orientMarkerOnSurface(marker, localPos) {
+            marker.position.copy(localPos);
+            // Orient ring tangent to the sphere surface
+            const normal = localPos.clone().normalize();
+            marker.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), normal);
+        }
+
+        // Smoothly rotate Earth so the midpoint of City A and City B faces the camera,
+        // tilted off the great-circle plane so the geodesic path visibly curves rather than looking like a flat straight line
+        function focusCameraOnCities(posA, posB) {
+            const mid = posA.clone().add(posB).normalize();
+            const yaw = Math.atan2(-mid.x, mid.z);
+            const horizontalDist = Math.sqrt(mid.x * mid.x + mid.z * mid.z);
+            const camElevation = (Math.PI / 2) - INITIAL_CAMERA_PHI;
+            const pitch = Math.atan2(mid.y, horizontalDist) - camElevation;
+
+            earthGroup.rotation.set(0, 0, 0);
+            earthGroup.rotateY(yaw);
+            const qPitch = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), pitch);
+            earthGroup.quaternion.premultiply(qPitch);
+
+            // Offset viewing perspective perpendicular to the great-circle plane (~24 deg)
+            // so the geodesic arc is viewed obliquely and exhibits clear spherical curvature
+            const vAWorld = posA.clone().applyQuaternion(earthGroup.quaternion).normalize();
+            const vBWorld = posB.clone().applyQuaternion(earthGroup.quaternion).normalize();
+            const chordDir = vBWorld.clone().sub(vAWorld);
+            chordDir.z = 0; // Project onto screen plane
+            if (chordDir.lengthSq() > 0.0001) {
+                chordDir.normalize();
+                const tiltSign = (Math.random() < 0.5 ? 1 : -1);
+                const obliqueTilt = THREE.MathUtils.degToRad(24) * tiltSign;
+                const qOblique = new THREE.Quaternion().setFromAxisAngle(chordDir, obliqueTilt);
+                earthGroup.quaternion.premultiply(qOblique);
+            }
+        }
+
+        // ==========================================
+        // 7. GAME FLOW & ROUND MANAGEMENT
+        // ==========================================
+        const labelAEl = document.getElementById('label-a');
+        const labelBEl = document.getElementById('label-b');
+        const startOverlay = document.getElementById('start-overlay');
+        const topControls = document.getElementById('top-controls');
+        const resultOverlay = document.getElementById('result-overlay');
+        const hintBar = document.getElementById('hint-bar');
+
+        function pickTwoRandomCities() {
+            const idxA = Math.floor(Math.random() * CITIES.length);
+            const cityA = CITIES[idxA];
+            let idxB = Math.floor(Math.random() * CITIES.length);
+
+            // 80% of the time, choose City B within +-30% of City A's latitude (with a minimum band for equatorial cities)
+            const enforceSimilarLatitude = Math.random() < 0.80;
+            const latTolerance = Math.max(12, Math.abs(cityA.lat) * 0.30);
+
+            // Ensure cities are distinct and have an interesting distance (at least ~1,800 km apart, max ~16,500 km)
+            let attempts = 0;
+            while (attempts < 250) {
+                idxB = Math.floor(Math.random() * CITIES.length);
+                if (idxA !== idxB) {
+                    const candidateB = CITIES[idxB];
+                    const latDiff = Math.abs(candidateB.lat - cityA.lat);
+                    if (!enforceSimilarLatitude || latDiff <= latTolerance) {
+                        const pA = latLonToVector3(cityA.lat, cityA.lon);
+                        const pB = latLonToVector3(candidateB.lat, candidateB.lon);
+                        const distKm = angularDistance(pA, pB) * REAL_EARTH_RADIUS_KM;
+                        if (distKm > 1800 && distKm < 16500) break;
+                    }
+                }
+                attempts++;
+            }
+
+            // Fallback if no pair met strict latitude + distance criteria
+            if (attempts >= 250) {
+                let fallbackAttempts = 0;
+                while (fallbackAttempts < 100) {
+                    idxB = Math.floor(Math.random() * CITIES.length);
+                    if (idxA !== idxB) {
+                        const pA = latLonToVector3(cityA.lat, cityA.lon);
+                        const pB = latLonToVector3(CITIES[idxB].lat, CITIES[idxB].lon);
+                        const distKm = angularDistance(pA, pB) * REAL_EARTH_RADIUS_KM;
+                        if (distKm > 1800 && distKm < 16500) break;
+                    }
+                    fallbackAttempts++;
+                }
+            }
+
+            return [cityA, CITIES[idxB]];
+        }
+
+        function startNewRound() {
+            const [cA, cB] = pickTwoRandomCities();
+            state.cityA = cA;
+            state.cityB = cB;
+            state.posA = latLonToVector3(cA.lat, cA.lon, EARTH_RADIUS);
+            state.posB = latLonToVector3(cB.lat, cB.lon, EARTH_RADIUS);
+
+            resetCurrentAttempt(true);
+        }
+
+        function resetCurrentAttempt(reorientGlobe = false) {
+            if (state.revealTimeout) {
+                clearTimeout(state.revealTimeout);
+                state.revealTimeout = null;
+            }
+            state.mode = 'PLAYING';
+            state.isDrawing = false;
+            state.drawPointerId = null;
+            state.startCity = null;
+            state.targetCity = null;
+            state.pathPoints = [];
+            state.optimalAnimStartTime = null;
+            state.optimalArcPoints = [];
+            state.rotVelocity = { x: 0, y: 0 };
+
+            clearPaths();
+
+            // Place markers & show ONLY City A and City B labels
+            orientMarkerOnSurface(markerA, state.posA);
+            orientMarkerOnSurface(markerB, state.posB);
+            markerA.visible = true;
+            markerB.visible = true;
+
+            markerA.userData.dot.material.color.setHex(0xffffff);
+            markerA.userData.ring.material.color.setHex(0xffffff);
+            markerB.userData.dot.material.color.setHex(0xffffff);
+            markerB.userData.ring.material.color.setHex(0xffffff);
+
+            labelAEl.textContent = state.cityA.name;
+            labelBEl.textContent = state.cityB.name;
+            labelAEl.classList.remove('hidden', 'active-start');
+            labelBEl.classList.remove('hidden', 'active-start');
+
+            // Update Overlays
+            startOverlay.classList.add('hidden');
+            resultOverlay.classList.add('hidden');
+            topControls.classList.remove('hidden');
+            hintBar.classList.remove('hidden');
+
+            if (reorientGlobe) {
+                focusCameraOnCities(state.posA, state.posB);
+            }
+        }
+
+        function finishRound() {
+            state.mode = 'REVEALING';
+            state.isDrawing = false;
+            state.drawPointerId = null;
+
+            // Snap final point cleanly to target city center
+            const endPos = state.targetCity === 'A' ? state.posA.clone() : state.posB.clone();
+            state.pathPoints.push(endPos);
+            updateUserPathMesh();
+
+            // Prepare shortest geodesic path ordered from the user's starting city to target city
+            const startArcPos = state.startCity === 'B' ? state.posB : state.posA;
+            const endArcPos = state.startCity === 'B' ? state.posA : state.posB;
+            state.optimalArcPoints = buildOptimalArcPoints(startArcPos, endArcPos);
+            // Total wait = 1.4s: pause 0.4s, then animate shortest path over the last 1.0s
+            state.optimalAnimStartTime = performance.now() + 400;
+
+            // Calculate Geodesic Distances & Accuracy Score
+            const optimalKm = angularDistance(state.posA, state.posB) * REAL_EARTH_RADIUS_KM;
+            const userKm = Math.max(optimalKm, computePathDistanceKm(state.pathPoints));
+
+            // Score formula: 100% if exact, gracefully decaying as excess path ratio increases
+            const ratio = optimalKm / userKm;
+            const rawScore = Math.pow(ratio, 1.35) * 100;
+            const clampedScore = Math.max(0, Math.min(100, rawScore));
+
+            // Prepare UI values
+            document.getElementById('score-value').textContent = `${clampedScore.toFixed(1)}%`;
+            document.getElementById('user-dist').textContent = `${Math.round(userKm).toLocaleString()} km`;
+            document.getElementById('opt-dist').textContent = `${Math.round(optimalKm).toLocaleString()} km`;
+
+            topControls.classList.add('hidden');
+            hintBar.classList.add('hidden');
+
+            // Wait 1.4s total (with the shortest path animating during the final 1.0s) before showing the result card
+            state.revealTimeout = setTimeout(() => {
+                updateAnimatedOptimalPath(1);
+                state.mode = 'RESULT';
+                resultOverlay.classList.remove('hidden');
+                state.revealTimeout = null;
+            }, 1400);
+        }
+
+        // ==========================================
+        // 8. RAYCASTING & MULTI-POINTER INTERACTION
+        // ==========================================
+        const raycaster = new THREE.Raycaster();
+        const pointerNDC = new THREE.Vector2();
+
+        function getEarthHitLocal(clientX, clientY) {
+            const rect = renderer.domElement.getBoundingClientRect();
+            pointerNDC.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+            pointerNDC.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+
+            raycaster.setFromCamera(pointerNDC, camera);
+            const hits = raycaster.intersectObject(earthMesh, false);
+            if (hits.length > 0) {
+                // Convert world intersection point to Earth's local coordinate system
+                return earthGroup.worldToLocal(hits[0].point.clone());
+            }
+            return null;
+        }
+
+        function rotateEarthByDelta(dx, dy) {
+            const rotSpeed = 0.0045;
+            const qY = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), dx * rotSpeed);
+            const qX = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), dy * rotSpeed);
+            earthGroup.quaternion.premultiply(qY);
+            earthGroup.quaternion.premultiply(qX);
+        }
+
+        // Pointer Down (Supports Mouse + Multi-Touch Mobile Simultaneously)
+        renderer.domElement.addEventListener('pointerdown', (e) => {
+            if (state.mode === 'MENU') return;
+
+            const localHit = getEarthHitLocal(e.clientX, e.clientY);
+
+            // Check if user clicked/tapped on City A or City B while in PLAYING mode
+            if (state.mode === 'PLAYING' && !state.isDrawing && localHit) {
+                const distToA = angularDistance(localHit, state.posA);
+                const distToB = angularDistance(localHit, state.posB);
+
+                if (distToA <= CITY_HIT_ANGLE_THRESHOLD || distToB <= CITY_HIT_ANGLE_THRESHOLD) {
+                    state.isDrawing = true;
+                    state.drawPointerId = e.pointerId;
+
+                    if (distToA <= distToB) {
+                        state.startCity = 'A';
+                        state.targetCity = 'B';
+                        state.pathPoints = [state.posA.clone()];
+                        markerA.userData.dot.material.color.setHex(0x3b82f6);
+                        markerA.userData.ring.material.color.setHex(0x3b82f6);
+                        labelAEl.classList.add('active-start');
+                    } else {
+                        state.startCity = 'B';
+                        state.targetCity = 'A';
+                        state.pathPoints = [state.posB.clone()];
+                        markerB.userData.dot.material.color.setHex(0x3b82f6);
+                        markerB.userData.ring.material.color.setHex(0x3b82f6);
+                        labelBEl.classList.add('active-start');
+                    }
+
+                    updateUserPathMesh();
+                    renderer.domElement.setPointerCapture(e.pointerId);
+                    return;
+                }
+            }
+
+            // Otherwise (empty drag, or second finger on mobile while drawing), assign this pointer to rotate the Earth
+            if (!state.isRotating) {
+                state.isRotating = true;
+                state.rotatePointerId = e.pointerId;
+                state.lastRotatePos = { x: e.clientX, y: e.clientY };
+                state.rotVelocity = { x: 0, y: 0 };
+                renderer.domElement.setPointerCapture(e.pointerId);
+            }
+        });
+
+        // Pointer Move
+        renderer.domElement.addEventListener('pointermove', (e) => {
+            // 1. Handle active path drawing
+            if (state.isDrawing && e.pointerId === state.drawPointerId && state.mode === 'PLAYING') {
+                const localHit = getEarthHitLocal(e.clientX, e.clientY);
+                if (localHit) {
+                    const lastPt = state.pathPoints[state.pathPoints.length - 1];
+                    const stepAngle = angularDistance(lastPt, localHit);
+
+                    // Record waypoint if moved sufficiently (~0.45 degrees) for smooth geodesic curve
+                    if (stepAngle > 0.008 && stepAngle < 0.65) {
+                        state.pathPoints.push(localHit);
+                        updateUserPathMesh();
+                    }
+
+                    // Check if user reached the target city
+                    const targetPos = state.targetCity === 'A' ? state.posA : state.posB;
+                    if (state.pathPoints.length > 3 && angularDistance(localHit, targetPos) <= CITY_HIT_ANGLE_THRESHOLD * 0.92) {
+                        finishRound();
+                    }
+                }
+                return;
+            }
+
+            // 2. Handle Globe Rotation (works independently even while first finger is drawing!)
+            if (state.isRotating && e.pointerId === state.rotatePointerId) {
+                const dx = e.clientX - state.lastRotatePos.x;
+                const dy = e.clientY - state.lastRotatePos.y;
+                state.lastRotatePos = { x: e.clientX, y: e.clientY };
+
+                rotateEarthByDelta(dx, dy);
+                state.rotVelocity = { x: dx, y: dy };
+            }
+        });
+
+        // Pointer Up / Cancel
+        function handlePointerEnd(e) {
+            if (state.isDrawing && e.pointerId === state.drawPointerId) {
+                state.isDrawing = false;
+                state.drawPointerId = null;
+
+                // If released before reaching target city, keep path visible or allow user to retry via ESC / Try Again
+                if (state.mode === 'PLAYING') {
+                    // Check one last time if release point was right on target
+                    const lastPt = state.pathPoints[state.pathPoints.length - 1];
+                    const targetPos = state.targetCity === 'A' ? state.posA : state.posB;
+                    if (lastPt && state.pathPoints.length > 3 && angularDistance(lastPt, targetPos) <= CITY_HIT_ANGLE_THRESHOLD) {
+                        finishRound();
+                    }
+                }
+            }
+
+            if (state.isRotating && e.pointerId === state.rotatePointerId) {
+                state.isRotating = false;
+                state.rotatePointerId = null;
+            }
+        }
+
+        renderer.domElement.addEventListener('pointerup', handlePointerEnd);
+        renderer.domElement.addEventListener('pointercancel', handlePointerEnd);
+
+        // ==========================================
+        // 9. KEYBOARD CONTROLS (ARROW KEYS + ESCAPE)
+        // ==========================================
+        window.addEventListener('keydown', (e) => {
+            if (e.key in state.keysPressed) {
+                e.preventDefault();
+                state.keysPressed[e.key] = true;
+            }
+            if (e.key === 'Escape') {
+                if (state.mode === 'PLAYING') {
+                    resetCurrentAttempt(false);
+                }
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            if (e.key in state.keysPressed) {
+                state.keysPressed[e.key] = false;
+            }
+        });
+
+        // UI Button Listeners
+        document.getElementById('btn-play').addEventListener('click', () => {
+            startNewRound();
+        });
+
+        document.getElementById('btn-try-again').addEventListener('click', () => {
+            if (state.mode === 'PLAYING') {
+                resetCurrentAttempt(false);
+            }
+        });
+
+        document.getElementById('btn-play-again').addEventListener('click', () => {
+            startNewRound();
+        });
+
+        // ==========================================
+        // 10. 3D-TO-2D CITY LABEL PROJECTION & LOOP
+        // ==========================================
+        function updateCityLabelPosition(localPos, labelEl) {
+            if (!localPos) return;
+
+            // Transform local sphere position to world space
+            const worldPos = localPos.clone().applyMatrix4(earthGroup.matrixWorld);
+
+            // Check if city is on the front-facing hemisphere relative to the camera
+            const toCam = camera.position.clone().sub(worldPos).normalize();
+            const surfaceNormal = worldPos.clone().normalize();
+            const facingDot = surfaceNormal.dot(toCam);
+
+            // Project to 2D screen coordinates
+            const projected = worldPos.clone().project(camera);
+            const x = (projected.x * 0.5 + 0.5) * window.innerWidth;
+            const y = (-projected.y * 0.5 + 0.5) * window.innerHeight;
+
+            labelEl.style.left = `${x}px`;
+            labelEl.style.top = `${y}px`;
+
+            // Dim label gracefully when rotated behind the horizon of the Earth
+            if (facingDot < -0.05) {
+                labelEl.style.opacity = '0.22';
+            } else {
+                labelEl.style.opacity = '1';
+            }
+        }
+
+        function handleWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            updateCameraDistance();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+        window.addEventListener('resize', handleWindowResize);
+
+        const clock = new THREE.Clock();
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const dt = clock.getDelta();
+            const elapsed = clock.getElapsedTime();
+
+            // 1. Gentle idle spin when on the start menu
+            if (state.mode === 'MENU') {
+                earthGroup.rotation.y += 0.14 * dt;
+            }
+
+            // 2. Continuous Arrow Key Rotation
+            const keySpeed = 1.9 * dt;
+            let keyYaw = 0;
+            let keyPitch = 0;
+            if (state.keysPressed.ArrowLeft) keyYaw -= keySpeed;
+            if (state.keysPressed.ArrowRight) keyYaw += keySpeed;
+            if (state.keysPressed.ArrowUp) keyPitch -= keySpeed;
+            if (state.keysPressed.ArrowDown) keyPitch += keySpeed;
+
+            if (keyYaw !== 0 || keyPitch !== 0) {
+                const qY = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), keyYaw);
+                const qX = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), keyPitch);
+                earthGroup.quaternion.premultiply(qY);
+                earthGroup.quaternion.premultiply(qX);
+            }
+
+            // 3. Smooth rotational inertia after drag release
+            if (!state.isRotating && (Math.abs(state.rotVelocity.x) > 0.05 || Math.abs(state.rotVelocity.y) > 0.05)) {
+                rotateEarthByDelta(state.rotVelocity.x, state.rotVelocity.y);
+                state.rotVelocity.x *= 0.91;
+                state.rotVelocity.y *= 0.91;
+            }
+
+            // 4. Animate shortest path joining A and B during the last 1.0s of the 1.4s reveal window
+            if (state.mode === 'REVEALING' && state.optimalAnimStartTime !== null) {
+                const animElapsed = performance.now() - state.optimalAnimStartTime;
+                if (animElapsed >= 0) {
+                    const progress = THREE.MathUtils.clamp(animElapsed / 1000, 0, 1);
+                    // Smooth ease-in-out curve for the shortest path reveal
+                    const eased = progress < 0.5
+                        ? 2 * progress * progress
+                        : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+                    updateAnimatedOptimalPath(eased);
+                }
+            }
+
+            // 5. Subtle pulse animation on City A & B rings
+            if (state.mode !== 'MENU') {
+                const pulseScale = 1 + Math.sin(elapsed * 4) * 0.18;
+                markerA.userData.ring.scale.set(pulseScale, pulseScale, 1);
+                markerB.userData.ring.scale.set(pulseScale, pulseScale, 1);
+
+                earthGroup.updateMatrixWorld();
+                updateCityLabelPosition(state.posA, labelAEl);
+                updateCityLabelPosition(state.posB, labelBEl);
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        // Start on Window Load
+        window.onload = function () {
+            handleWindowResize();
+            animate();
+        };
+    </script>
+</body>
+</html>
